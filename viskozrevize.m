@@ -52,6 +52,9 @@ function [X,F,gaout] = run_ga_driver(scaled, params, optsEval, optsGA)
 % --- Seri MANUAL_EVAL örneği (tek tasarım) ---
 % optsGA = struct('manual_mode',true,'manual_x',manual_x,'use_parallel',false,'manual_label','case1');
 % [X,F,gaout] = run_ga_driver([], [], struct(), optsGA);
+% Editor "Run" ile argümansız çalıştırırsanız GA başlar; MANUAL_EVAL için optsGA ile komut penceresinden çağırın.
+% optsGA=struct('manual_mode',true,'manual_x',manual_x);
+% [X,F,gaout]=run_ga_driver([], [], optsGA);  % 3 arg desteği
 
 narginchk(0,4);
 
@@ -59,6 +62,16 @@ if nargin < 1 || isempty(scaled),  scaled  = []; end
 if nargin < 2 || isempty(params),  params  = []; end
 if nargin < 3 || isempty(optsEval), optsEval = struct; end
 if nargin < 4 || isempty(optsGA),   optsGA   = struct; end
+
+if nargin==3 && isstruct(optsEval) && ( ...
+        isfield(optsEval,'manual_mode') || isfield(optsEval,'manual_x') || isfield(optsEval,'manual_params') || ...
+        isfield(optsEval,'manual_label') || isfield(optsEval,'skip_plots') || isfield(optsEval,'use_parallel') )
+    optsGA = optsEval;
+    optsEval = struct;
+end
+if ~isfield(optsGA,'verbose') || isempty(optsGA.verbose)
+    optsGA.verbose = false;
+end
 
 % Gerekli girdiler sağlanmadıysa otomatik hazırla.
 if isempty(scaled) || isempty(params)
@@ -74,6 +87,10 @@ assignin('base','params',params);
     force_serial_when_nF1 = ~isfield(optsGA,'force_serial_when_nF1') || logical(optsGA.force_serial_when_nF1);
     manual_details = [];
     manual_meta = [];
+    if optsGA.verbose
+        fprintf('[run_ga_driver] manual_mode = %d\n', manual_mode);
+        fprintf('[run_ga_driver] mfile = %s\n', mfilename('fullpath'));
+    end
 % === Parpool açılışı (temizlik + iş parçacığı sınırı) ===
 usePool = true;
 if manual_mode
@@ -185,6 +202,7 @@ ub = [3.50,  12,    0.95, 1.00,  1.60,  240,     400,       260,   20,     200, 
         options = struct('manual_mode',true,'lb',lb,'ub',ub,'IntCon',IntCon, ...
             'note','MANUAL_EVAL (GA toolbox bypassed)');
     else
+        assert(~manual_mode, 'BUG: MANUAL_EVAL aktifken GA bloğuna girildi.');
         % ================= [BÖLÜM: GA Optimizasyon Ayarları] =================
         % Amaç (SCI): Çok amaçlı GA parametrelerini tek blokta tanımlayarak nüfus dinamiklerini şeffaf raporlamayı kolaylaştırmak.
         % Yöntem: optimoptions çağrısı tek noktadan yapılarak OutputFcn üzerinden outdir aktarılır ve Display seçeneği iter seviyesinde tutulur.
@@ -3580,3 +3598,7 @@ function save_ga_diagnostics_as_pdf(state, prefixPath)
     print(fig, [prefixPath '_distance_rank.pdf'], '-dpdf', '-r300', '-bestfit');
     close(fig);
 end
+
+% Kullanım (4 arg): optsGA=struct('manual_mode',true,'manual_x',manual_x); [X,F,gaout]=run_ga_driver([], [], struct(), optsGA);
+% Kullanım (3 arg): optsGA=struct('manual_mode',true,'manual_x',manual_x); [X,F,gaout]=run_ga_driver([], [], optsGA);
+% Uyarı: Editor "Run" argümansızsa GA açılır; MANUAL_EVAL için komut penceresinden optsGA ile çağırın.
