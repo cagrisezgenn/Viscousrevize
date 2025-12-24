@@ -41,11 +41,17 @@ function [X,F,gaout] = run_ga_driver(scaled, params, optsEval, optsGA)
 % optsGA.manual_x = [d_o_mm, n_orf, Cd0, CdInf, p_exp, Lori_mm, hA, Dp_mm, d_w_mm, D_m_mm, n_turn, mu_ref];
 % optsGA.manual_label = 'case1';
 % [X,F,gaout] = run_ga_driver([], [], struct(), optsGA);
+% optsGA.use_parallel = false;          % PCT yoksa seri koş
+% optsGA.force_serial_when_nF1 = true;  % nF==1 ise otomatik seri
 
 % --- MANUAL_EVAL (manual_params) ---
 % optsGA = struct('manual_mode',true,'manual_params',Pstruct,'manual_label','caseP');
 % [X,F,gaout] = run_ga_driver([], [], struct(), optsGA);
 % Not: manual_params, decode/encode ile uyumlu “params” birimlerini (SI taban) kullanmalıdır.
+
+% --- Seri MANUAL_EVAL örneği (tek tasarım) ---
+% optsGA = struct('manual_mode',true,'manual_x',manual_x,'use_parallel',false,'manual_label','case1');
+% [X,F,gaout] = run_ga_driver([], [], struct(), optsGA);
 
 narginchk(0,4);
 
@@ -60,13 +66,26 @@ if isempty(scaled) || isempty(params)
 end
 assignin('base','scaled',scaled);
 assignin('base','params',params);
+
+    manual_mode = isfield(optsGA,'manual_mode') && logical(optsGA.manual_mode);
+    skip_plots  = isfield(optsGA,'skip_plots')  && logical(optsGA.skip_plots);
+    manual_fast = isfield(optsGA,'manual_fast') && logical(optsGA.manual_fast);
+    use_parallel = ~isfield(optsGA,'use_parallel') || logical(optsGA.use_parallel);
+    force_serial_when_nF1 = ~isfield(optsGA,'force_serial_when_nF1') || logical(optsGA.force_serial_when_nF1);
+    manual_details = [];
+    manual_meta = [];
 % === Parpool açılışı (temizlik + iş parçacığı sınırı) ===
 usePool = true;
-try
-    usePool = parpool_hard_reset(16);
-catch ME
-    warning('run_ga_driver:parpool', 'Parallel pool unavailable: %s', ME.message);
-    usePool = false;
+if manual_mode
+    usePool = use_parallel;
+end
+if usePool
+    try
+        usePool = parpool_hard_reset(16);
+    catch ME
+        warning('run_ga_driver:parpool', 'Parallel pool unavailable: %s', ME.message);
+        usePool = false;
+    end
 end
 
 assert(~isempty(scaled), 'run_ga_driver: scaled dataset is empty.');
@@ -92,8 +111,6 @@ penopts = struct('lambda',lambda,'power',pwr,'W',W,'cav_free',cav_free);
 %% GA Sürücüsü ve Kurulum — Optimizasyon Ayarları
 % GA amaç fonksiyonu ve optimizasyon seçeneklerini hazırla.
     rng(42);
-    manual_mode = isfield(optsGA,'manual_mode') && logical(optsGA.manual_mode);
-    skip_plots  = isfield(optsGA,'skip_plots')  && logical(optsGA.skip_plots);
 
     % ================= [BÖLÜM: Çıktı Dizin Kurulumu] =================
     % Amaç (SCI): GA çıktılarının tekil ve izlenebilir klasörlerde arşivlenmesini sağlamak.
@@ -140,6 +157,8 @@ ub = [3.50,  12,    0.95, 1.00,  1.60,  240,     400,       260,   20,     200, 
         x_used(IntCon) = round(x_used(IntCon));
 
         [f_row, meta, details] = eval_design_fast(x_used, scaled, params, optsEval);
+        manual_details = details;
+        manual_meta = meta;
 
         X = x_used;
         F = f_row;
@@ -151,7 +170,10 @@ ub = [3.50,  12,    0.95, 1.00,  1.60,  240,     400,       260,   20,     200, 
         output.generations = 0;
 
         gaout = struct('exitflag',exitflag,'output',output);
-        gaout.manual = struct('x_in',x_in,'x_used',x_used,'f',f_row,'meta',meta);
+        gaout.manual = struct('x_in',x_in,'x_used',x_used,'f',f_row,'meta',meta, ...
+                              'manual_fast',manual_fast,'use_parallel',use_parallel, ...
+                              'force_serial_when_nF1',force_serial_when_nF1, ...
+                              're_evaluate_skipped',false);
         if isfield(optsGA,'save_details') && optsGA.save_details
             gaout.manual.details = details;
         end
@@ -227,36 +249,117 @@ save(fullfile(outdir,'ga_front.mat'), '-struct', 'front', '-v7.3');
     % ceza bileşenleri (eval ile aynı)
     pen     = zeros(nF,1);
     pen_dP  = zeros(nF,1); pen_Qcap = zeros(nF,1); pen_cav = zeros(nF,1); pen_T = zeros(nF,1); pen_mu = zeros(nF,1);
-    % parfor güvenliği için tüm yardımcılar subfunction'dır; nested kullanılmaz.
-    parfor i = 1:nF
-        Xi = quant_clamp_x(X(i,:));
-        Pi = decode_params_from_x(params, Xi);
-        Si = run_batch_windowed(scaled, Pi, Opost);
-        metrics = summarize_metrics_table(Si.table, Opost, lambda, pwr, W);
 
-        PFA_mean(i) = metrics.PFA_mean;
-        IDR_mean(i) = metrics.IDR_mean;
-        x10_max_damperli(i) = metrics.x10_max_damperli;
-        a10abs_max_damperli(i) = metrics.a10abs_max_damperli;
-        dP95(i)   = metrics.dP95;
-        Qcap95(i) = metrics.Qcap95;
-        cav_pct(i) = metrics.cav_pct;
-        T_end(i)  = metrics.T_end;
-        mu_end(i) = metrics.mu_end;
-        Q_q50(i)  = metrics.Q_q50;
-        Q_q95(i) = metrics.Q_q95;
-        dP50(i)   = metrics.dP50;
-        energy_tot_sum(i) = metrics.energy_tot_sum;
-        E_orifice_sum(i)  = metrics.E_orifice_sum;
-        E_struct_sum(i)   = metrics.E_struct_sum;
-        E_ratio(i)        = metrics.E_ratio;
-        P_mech_sum(i)     = metrics.P_mech_sum;
-        pen_dP(i) = metrics.pen_dP;
-        pen_Qcap(i) = metrics.pen_Qcap;
-        pen_cav(i) = metrics.pen_cav;
-        pen_T(i)   = metrics.pen_T;
-        pen_mu(i)  = metrics.pen_mu;
-        pen(i)     = metrics.pen;
+    use_reval = true;
+    if manual_mode && manual_fast
+        use_reval = false;
+        if isfield(gaout,'manual')
+            gaout.manual.re_evaluate_skipped = true;
+        end
+    end
+
+    if use_reval
+        use_par = use_parallel && usePool;
+        if ~manual_mode
+            use_par = usePool;
+        end
+        if force_serial_when_nF1 && nF == 1
+            use_par = false;
+        end
+        if use_par
+            parpool_hard_reset(16);
+            parfor i = 1:nF
+                Xi = quant_clamp_x(X(i,:));
+                Pi = decode_params_from_x(params, Xi);
+                Si = run_batch_windowed(scaled, Pi, Opost);
+                metrics = summarize_metrics_table(Si.table, Opost, lambda, pwr, W);
+                PFA_mean(i) = metrics.PFA_mean;
+                IDR_mean(i) = metrics.IDR_mean;
+                x10_max_damperli(i) = metrics.x10_max_damperli;
+                a10abs_max_damperli(i) = metrics.a10abs_max_damperli;
+                dP95(i)   = metrics.dP95;
+                Qcap95(i) = metrics.Qcap95;
+                cav_pct(i) = metrics.cav_pct;
+                T_end(i)  = metrics.T_end;
+                mu_end(i) = metrics.mu_end;
+                Q_q50(i)  = metrics.Q_q50;
+                Q_q95(i) = metrics.Q_q95;
+                dP50(i)   = metrics.dP50;
+                energy_tot_sum(i) = metrics.energy_tot_sum;
+                E_orifice_sum(i)  = metrics.E_orifice_sum;
+                E_struct_sum(i)   = metrics.E_struct_sum;
+                E_ratio(i)        = metrics.E_ratio;
+                P_mech_sum(i)     = metrics.P_mech_sum;
+                pen_dP(i) = metrics.pen_dP;
+                pen_Qcap(i) = metrics.pen_Qcap;
+                pen_cav(i) = metrics.pen_cav;
+                pen_T(i)   = metrics.pen_T;
+                pen_mu(i)  = metrics.pen_mu;
+                pen(i)     = metrics.pen;
+            end
+        else
+            for i = 1:nF
+                Xi = quant_clamp_x(X(i,:));
+                Pi = decode_params_from_x(params, Xi);
+                Si = run_batch_windowed(scaled, Pi, Opost);
+                metrics = summarize_metrics_table(Si.table, Opost, lambda, pwr, W);
+                PFA_mean(i) = metrics.PFA_mean;
+                IDR_mean(i) = metrics.IDR_mean;
+                x10_max_damperli(i) = metrics.x10_max_damperli;
+                a10abs_max_damperli(i) = metrics.a10abs_max_damperli;
+                dP95(i)   = metrics.dP95;
+                Qcap95(i) = metrics.Qcap95;
+                cav_pct(i) = metrics.cav_pct;
+                T_end(i)  = metrics.T_end;
+                mu_end(i) = metrics.mu_end;
+                Q_q50(i)  = metrics.Q_q50;
+                Q_q95(i) = metrics.Q_q95;
+                dP50(i)   = metrics.dP50;
+                energy_tot_sum(i) = metrics.energy_tot_sum;
+                E_orifice_sum(i)  = metrics.E_orifice_sum;
+                E_struct_sum(i)   = metrics.E_struct_sum;
+                E_ratio(i)        = metrics.E_ratio;
+                P_mech_sum(i)     = metrics.P_mech_sum;
+                pen_dP(i) = metrics.pen_dP;
+                pen_Qcap(i) = metrics.pen_Qcap;
+                pen_cav(i) = metrics.pen_cav;
+                pen_T(i)   = metrics.pen_T;
+                pen_mu(i)  = metrics.pen_mu;
+                pen(i)     = metrics.pen;
+            end
+        end
+    else
+        % manual_fast: run_batch_windowed tekrarını atla, mevcut detayları kullan
+        for i = 1:nF
+            tbl_local = table();
+            if isstruct(manual_details) && isfield(manual_details,'table')
+                tbl_local = manual_details.table;
+            end
+            metrics = summarize_metrics_table(tbl_local, Opost, lambda, pwr, W);
+            PFA_mean(i) = metrics.PFA_mean;
+            IDR_mean(i) = metrics.IDR_mean;
+            x10_max_damperli(i) = metrics.x10_max_damperli;
+            a10abs_max_damperli(i) = metrics.a10abs_max_damperli;
+            dP95(i)   = metrics.dP95;
+            Qcap95(i) = metrics.Qcap95;
+            cav_pct(i) = metrics.cav_pct;
+            T_end(i)  = metrics.T_end;
+            mu_end(i) = metrics.mu_end;
+            Q_q50(i)  = metrics.Q_q50;
+            Q_q95(i) = metrics.Q_q95;
+            dP50(i)   = metrics.dP50;
+            energy_tot_sum(i) = metrics.energy_tot_sum;
+            E_orifice_sum(i)  = metrics.E_orifice_sum;
+            E_struct_sum(i)   = metrics.E_struct_sum;
+            E_ratio(i)        = metrics.E_ratio;
+            P_mech_sum(i)     = metrics.P_mech_sum;
+            pen_dP(i) = metrics.pen_dP;
+            pen_Qcap(i) = metrics.pen_Qcap;
+            pen_cav(i) = metrics.pen_cav;
+            pen_T(i)   = metrics.pen_T;
+            pen_mu(i)  = metrics.pen_mu;
+            pen(i)     = metrics.pen;
+        end
     end
 
     % Satır başına dizilerden T tablosunu oluştur
