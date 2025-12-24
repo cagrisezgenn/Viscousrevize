@@ -35,6 +35,17 @@
 %     fonksiyonunda değerlendirilir.
 % -------------------------------------------------------------------------
 function [X,F,gaout] = run_ga_driver(scaled, params, optsEval, optsGA)
+% --- MANUAL_EVAL kullanım (tek tasarım) ---
+% optsGA = struct();
+% optsGA.manual_mode = true;
+% optsGA.manual_x = [d_o_mm, n_orf, Cd0, CdInf, p_exp, Lori_mm, hA, Dp_mm, d_w_mm, D_m_mm, n_turn, mu_ref];
+% optsGA.manual_label = 'case1';
+% [X,F,gaout] = run_ga_driver([], [], struct(), optsGA);
+
+% --- MANUAL_EVAL (manual_params) ---
+% optsGA = struct('manual_mode',true,'manual_params',Pstruct,'manual_label','caseP');
+% [X,F,gaout] = run_ga_driver([], [], struct(), optsGA);
+% Not: manual_params, decode/encode ile uyumlu “params” birimlerini (SI taban) kullanmalıdır.
 
 narginchk(0,4);
 
@@ -81,12 +92,28 @@ penopts = struct('lambda',lambda,'power',pwr,'W',W,'cav_free',cav_free);
 %% GA Sürücüsü ve Kurulum — Optimizasyon Ayarları
 % GA amaç fonksiyonu ve optimizasyon seçeneklerini hazırla.
     rng(42);
+    manual_mode = isfield(optsGA,'manual_mode') && logical(optsGA.manual_mode);
+    skip_plots  = isfield(optsGA,'skip_plots')  && logical(optsGA.skip_plots);
+
     % ================= [BÖLÜM: Çıktı Dizin Kurulumu] =================
     % Amaç (SCI): GA çıktılarının tekil ve izlenebilir klasörlerde arşivlenmesini sağlamak.
     % Yöntem: datestr ile tstamp oluşturulur, out/ga_* dizini mkdir ile hazırlanır ve tüm raporlar bu dizine yönlendirilir.
     % Notlar: Milisaniye çözünürlüklü tstamp paralel oturum çakışmalarını önler ve sonuç paketlerinde raporlanır.
     tstamp = datestr(now,'yyyymmdd_HHMMSS_FFF');
-    outdir = fullfile('out', ['ga_' tstamp]);
+    label = '';
+    if manual_mode && isfield(optsGA,'manual_label') && ~isempty(optsGA.manual_label)
+        label = char(optsGA.manual_label);
+        label = regexprep(label,'\s+','_');
+        label = regexprep(label,'[^A-Za-z0-9_-]+','_');
+        if ~isempty(label)
+            label = ['_' label];
+        end
+    end
+    if manual_mode
+        outdir = fullfile('out', ['ga_manual_' tstamp label]);
+    else
+        outdir = fullfile('out', ['ga_' tstamp]);
+    end
     if ~exist(outdir,'dir'), mkdir(outdir); end
 
  % [d_o_mm, n_orf, Cd0,  CdInf,  p_exp, Lori_mm, hA_W_perK, Dp_mm, d_w_mm, D_m_mm, n_turn, mu_ref]
@@ -96,48 +123,88 @@ ub = [3.50,  12,    0.95, 1.00,  1.60,  240,     400,       260,   20,     200, 
     IntCon = [2 11];  % n_orf ve n_turn tam sayı
 
     obj = @(x) eval_design_fast(x, scaled, params, optsEval); % içerde kuantize/clamplar
+    if manual_mode
+        has_x = isfield(optsGA,'manual_x') && ~isempty(optsGA.manual_x);
+        has_p = isfield(optsGA,'manual_params') && ~isempty(optsGA.manual_params);
+        assert(has_x || has_p, 'MANUAL_EVAL: manual_x veya manual_params gerekli.');
 
-    % ================= [BÖLÜM: GA Optimizasyon Ayarları] =================
-    % Amaç (SCI): Çok amaçlı GA parametrelerini tek blokta tanımlayarak nüfus dinamiklerini şeffaf raporlamayı kolaylaştırmak.
-    % Yöntem: optimoptions çağrısı tek noktadan yapılarak OutputFcn üzerinden outdir aktarılır ve Display seçeneği iter seviyesinde tutulur.
-    % Notlar: CrossoverFraction=0.85 ve ParetoFraction=0.65 literatürde viskoz damper tasarımında Pareto sıkışmasını azaltan aralıklardadır.
-    GAdef = struct('PopulationSize', 600, ...
-                   'MaxGenerations', 180, ...
-                   'ParetoFraction', 0.65, ...
-                   'StallGenLimit', 90, ...
-                   'CrossoverFraction', 0.85, ...
-                   'FunctionTolerance', 1e-7, ...
-                   'ConstraintTolerance', 1e-6, ...
-                   'PlotInterval', 1);
-    fn = fieldnames(GAdef);
-    for k = 1:numel(fn)
-        if ~isfield(optsGA, fn{k}) || isempty(optsGA.(fn{k}))
-            optsGA.(fn{k}) = GAdef.(fn{k});
+        if has_x
+            x_in = double(optsGA.manual_x(:))';
+        else
+            x_in = encode_params_to_x(optsGA.manual_params);
         end
+        assert(numel(x_in) == 12, 'MANUAL_EVAL: manual_x 1x12 olmalı.');
+
+        x_clamped = min(max(x_in, lb), ub);
+        x_used = quant_clamp_x(x_clamped);
+        x_used(IntCon) = round(x_used(IntCon));
+
+        [f_row, meta, details] = eval_design_fast(x_used, scaled, params, optsEval);
+
+        X = x_used;
+        F = f_row;
+
+        exitflag = 0;
+        output = struct();
+        output.message = 'MANUAL_EVAL';
+        output.funcCount = 1;
+        output.generations = 0;
+
+        gaout = struct('exitflag',exitflag,'output',output);
+        gaout.manual = struct('x_in',x_in,'x_used',x_used,'f',f_row,'meta',meta);
+        if isfield(optsGA,'save_details') && optsGA.save_details
+            gaout.manual.details = details;
+        end
+
+        assignin('base','X',X);
+        assignin('base','F',F);
+        assignin('base','gaout',gaout);
+
+        options = struct('manual_mode',true,'lb',lb,'ub',ub,'IntCon',IntCon, ...
+            'note','MANUAL_EVAL (GA toolbox bypassed)');
+    else
+        % ================= [BÖLÜM: GA Optimizasyon Ayarları] =================
+        % Amaç (SCI): Çok amaçlı GA parametrelerini tek blokta tanımlayarak nüfus dinamiklerini şeffaf raporlamayı kolaylaştırmak.
+        % Yöntem: optimoptions çağrısı tek noktadan yapılarak OutputFcn üzerinden outdir aktarılır ve Display seçeneği iter seviyesinde tutulur.
+        % Notlar: CrossoverFraction=0.85 ve ParetoFraction=0.65 literatürde viskoz damper tasarımında Pareto sıkışmasını azaltan aralıklardadır.
+        GAdef = struct('PopulationSize', 600, ...
+                       'MaxGenerations', 180, ...
+                       'ParetoFraction', 0.65, ...
+                       'StallGenLimit', 90, ...
+                       'CrossoverFraction', 0.85, ...
+                       'FunctionTolerance', 1e-7, ...
+                       'ConstraintTolerance', 1e-6, ...
+                       'PlotInterval', 1);
+        fn = fieldnames(GAdef);
+        for k = 1:numel(fn)
+            if ~isfield(optsGA, fn{k}) || isempty(optsGA.(fn{k}))
+                optsGA.(fn{k}) = GAdef.(fn{k});
+            end
+        end
+
+        options = optimoptions('gamultiobj', ...
+            'PopulationSize',     optsGA.PopulationSize, ...
+            'MaxGenerations',     optsGA.MaxGenerations, ...
+            'CrossoverFraction',  optsGA.CrossoverFraction, ...
+            'MutationFcn',        {@mutationadaptfeasible}, ...
+            'ParetoFraction',     optsGA.ParetoFraction, ...
+            'StallGenLimit',      optsGA.StallGenLimit, ...
+            'DistanceMeasureFcn', 'distancecrowding', ...
+            'OutputFcn',          @(options,state,flag) ga_out_best_pen(options,state,flag, scaled, params, optsEval, outdir), ...
+            'UseParallel',        usePool, ...
+            'ConstraintTolerance',optsGA.ConstraintTolerance, ...
+            'FunctionTolerance',  optsGA.FunctionTolerance, ...
+            'PlotFcn',            {@gaplotpareto, @gaplotparetodistance, @gaplotrankhist}, ...
+            'PlotInterval',       optsGA.PlotInterval, ...
+            'Display',            'iter');
+
+        nonlcon = @(x) nlcon_spring_index(x);
+        [X,F,exitflag,output] = gamultiobj(obj, numel(lb), [],[],[],[], lb, ub, nonlcon, IntCon, options);
+        gaout = struct('exitflag',exitflag,'output',output);
+        assignin('base','X',X);
+        assignin('base','F',F);
+        assignin('base','gaout',gaout);
     end
-
-    options = optimoptions('gamultiobj', ...
-        'PopulationSize',     optsGA.PopulationSize, ...
-        'MaxGenerations',     optsGA.MaxGenerations, ...
-        'CrossoverFraction',  optsGA.CrossoverFraction, ...
-        'MutationFcn',        {@mutationadaptfeasible}, ...
-        'ParetoFraction',     optsGA.ParetoFraction, ...
-        'StallGenLimit',      optsGA.StallGenLimit, ...
-        'DistanceMeasureFcn', 'distancecrowding', ...
-        'OutputFcn',          @(options,state,flag) ga_out_best_pen(options,state,flag, scaled, params, optsEval, outdir), ...
-        'UseParallel',        usePool, ...
-        'ConstraintTolerance',optsGA.ConstraintTolerance, ...
-        'FunctionTolerance',  optsGA.FunctionTolerance, ...
-        'PlotFcn',            {@gaplotpareto, @gaplotparetodistance, @gaplotrankhist}, ...
-        'PlotInterval',       optsGA.PlotInterval, ...
-        'Display',            'iter');
-
-    nonlcon = @(x) nlcon_spring_index(x);
-    [X,F,exitflag,output] = gamultiobj(obj, numel(lb), [],[],[],[], lb, ub, nonlcon, IntCon, options);
-    gaout = struct('exitflag',exitflag,'output',output);
-    assignin('base','X',X);
-assignin('base','F',F);
-assignin('base','gaout',gaout);
 
     %% Sonuçların Paketlenmesi
     % GA tamamlandıktan sonra sonuçları dosyalara kaydet.
@@ -209,8 +276,10 @@ save(fullfile(outdir,'ga_front.mat'), '-struct', 'front', '-v7.3');
     T = prepend_baseline_row(T, params, scaled, Opost, lambda, pwr, W);
 
     write_pareto_results(T, outdir);
-    raporla_ga_sonuclari(X, F, scaled, params, optsEval, gaout);
-    ciz_ga_grafikleri(X, scaled, params, optsEval);
+    if ~skip_plots
+        raporla_ga_sonuclari(X, F, scaled, params, optsEval, gaout);
+        ciz_ga_grafikleri(X, scaled, params, optsEval);
+    end
     % En iyi K tasarımın parametre listesi
     K = min(10, size(X,1));
     if K > 0
