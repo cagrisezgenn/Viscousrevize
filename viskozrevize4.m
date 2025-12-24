@@ -1,3 +1,59 @@
+function [X,F,gaout] = viskozrevize4(varargin)
+% viskozrevize4('MANUAL', manual_x)  -> GA’sız çalışır
+% viskozrevize4('GA')               -> GA çalışır
+% Eğer MANUAL_X boşsa base workspace'ten manual_x okunur.
+
+% ===== USER TOGGLE =====
+RUN_MODE = 'MANUAL';   % 'MANUAL' veya 'GA'
+MANUAL_X = [];         % 1x12 numeric. Boşsa base workspace'ten 'manual_x' aransın.
+MANUAL_LABEL = 'case1';
+SKIP_PLOTS = true;
+USE_PARALLEL = false;  % MANUAL modda tavsiye: false
+% =======================
+
+if nargin>=1 && (ischar(varargin{1}) || isstring(varargin{1}))
+    RUN_MODE = upper(string(varargin{1}));
+end
+if nargin>=2 && isnumeric(varargin{2}) && numel(varargin{2})==12
+    MANUAL_X = varargin{2};
+end
+
+if strcmpi(RUN_MODE,'MANUAL')
+    if isempty(MANUAL_X)
+        try
+            MANUAL_X = evalin('base','manual_x');
+        catch
+            error('MANUAL mod: MANUAL_X boş. MANUAL_X''i doldurun veya base workspace''te manual_x tanımlayın.');
+        end
+    end
+    MANUAL_X = double(MANUAL_X(:))';
+    if numel(MANUAL_X) ~= 12
+        error('MANUAL mod: manual_x 1x12 olmalı.');
+    end
+
+    optsGA = struct();
+    optsGA.manual_mode  = true;
+    optsGA.manual_x     = MANUAL_X;
+    optsGA.manual_label = MANUAL_LABEL;
+    optsGA.skip_plots   = SKIP_PLOTS;
+    optsGA.use_parallel = USE_PARALLEL;
+
+    optsEval = struct();
+    [X,F,gaout] = run_ga_driver([], [], optsEval, optsGA);
+
+    if isfield(gaout,'output') && isfield(gaout.output,'message')
+        disp(gaout.output.message);
+    end
+    return;
+elseif strcmpi(RUN_MODE,'GA')
+    optsGA = struct('run_mode','GA','skip_plots',SKIP_PLOTS,'use_parallel',USE_PARALLEL);
+    optsEval = struct();
+    [X,F,gaout] = run_ga_driver([], [], optsEval, optsGA);
+else
+    error('RUN_MODE yalnızca ''MANUAL'' veya ''GA'' olabilir.');
+end
+end
+
 %% GA Sürücüsü ve Kurulum
 % -------------------------------------------------------------------------
 % Amaç ve Kapsam:
@@ -258,6 +314,10 @@ ub = [3.50,  12,    0.95, 1.00,  1.60,  240,     400,       260,   20,     200, 
             if ~isfield(optsGA, fn{k}) || isempty(optsGA.(fn{k}))
                 optsGA.(fn{k}) = GAdef.(fn{k});
             end
+        end
+
+        if exist('optsGA','var') && isstruct(optsGA) && isfield(optsGA,'manual_mode') && optsGA.manual_mode
+            error('BUG: MANUAL mod aktifken GA bloğuna girildi. Akış kontrolü hatalı.');
         end
 
         options = optimoptions('gamultiobj', ...
