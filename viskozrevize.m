@@ -35,6 +35,12 @@
 %     fonksiyonunda değerlendirilir.
 % -------------------------------------------------------------------------
 function [X,F,gaout] = run_ga_driver(scaled, params, optsEval, optsGA)
+% ===== USER TOGGLE (Editor Run için) =====
+DEFAULT_RUN_MODE = 'MANUAL';   % 'MANUAL' veya 'GA'
+DEFAULT_MANUAL_X = [];         % MANUAL’da çalıştırmak için 1x12 vektör buraya girilecek
+DEFAULT_MANUAL_LABEL = 'case1';
+DEFAULT_SKIP_PLOTS = false;
+% ========================================
 % --- MANUAL_EVAL kullanım (tek tasarım) ---
 % optsGA = struct();
 % optsGA.manual_mode = true;
@@ -43,6 +49,10 @@ function [X,F,gaout] = run_ga_driver(scaled, params, optsEval, optsGA)
 % [X,F,gaout] = run_ga_driver([], [], struct(), optsGA);
 % optsGA.use_parallel = false;          % PCT yoksa seri koş
 % optsGA.force_serial_when_nF1 = true;  % nF==1 ise otomatik seri
+% GA çalıştır:
+% optsGA = struct('run_mode','GA'); [X,F,gaout] = run_ga_driver([], [], optsGA); % veya 4 arg
+% MANUAL çalıştır:
+% optsGA = struct('run_mode','MANUAL','manual_x',manual_x,'manual_label','case1'); [X,F,gaout] = run_ga_driver([], [], optsGA);
 
 % --- MANUAL_EVAL (manual_params) ---
 % optsGA = struct('manual_mode',true,'manual_params',Pstruct,'manual_label','caseP');
@@ -58,6 +68,22 @@ function [X,F,gaout] = run_ga_driver(scaled, params, optsEval, optsGA)
 
 narginchk(0,4);
 
+if nargin==0
+    scaled = [];
+    params = [];
+    optsEval = struct();
+    optsGA = struct();
+    optsGA.run_mode = DEFAULT_RUN_MODE;
+    optsGA.manual_label = DEFAULT_MANUAL_LABEL;
+    optsGA.skip_plots = DEFAULT_SKIP_PLOTS;
+    if strcmpi(DEFAULT_RUN_MODE,'MANUAL')
+        if isempty(DEFAULT_MANUAL_X)
+            error('DEFAULT_MANUAL_X boş. MANUAL çalıştırmak için 1x12 manual_x girin veya optsGA ile çağırın.');
+        end
+        optsGA.manual_x = DEFAULT_MANUAL_X;
+    end
+end
+
 if nargin < 1 || isempty(scaled),  scaled  = []; end
 if nargin < 2 || isempty(params),  params  = []; end
 if nargin < 3 || isempty(optsEval), optsEval = struct; end
@@ -65,10 +91,22 @@ if nargin < 4 || isempty(optsGA),   optsGA   = struct; end
 
 if nargin==3 && isstruct(optsEval) && ( ...
         isfield(optsEval,'manual_mode') || isfield(optsEval,'manual_x') || isfield(optsEval,'manual_params') || ...
-        isfield(optsEval,'manual_label') || isfield(optsEval,'skip_plots') || isfield(optsEval,'use_parallel') )
+        isfield(optsEval,'manual_label') || isfield(optsEval,'skip_plots') || isfield(optsEval,'use_parallel') || ...
+        isfield(optsEval,'run_mode') )
     optsGA = optsEval;
     optsEval = struct;
 end
+
+if isfield(optsGA,'run_mode') && ~isempty(optsGA.run_mode)
+    if strcmpi(optsGA.run_mode,'MANUAL')
+        optsGA.manual_mode = true;
+    elseif strcmpi(optsGA.run_mode,'GA')
+        optsGA.manual_mode = false;
+    else
+        error('optsGA.run_mode yalnızca ''MANUAL'' veya ''GA'' olabilir.');
+    end
+end
+
 if ~isfield(optsGA,'verbose') || isempty(optsGA.verbose)
     optsGA.verbose = false;
 end
